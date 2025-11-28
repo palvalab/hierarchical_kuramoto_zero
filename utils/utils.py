@@ -1,22 +1,23 @@
-import statsmodels.api as sm
-from scipy.optimize import curve_fit
-
-import math
-
-
 import numpy as np
+import numpy.typing as npt
+
 import scipy as sp
-import scipy.signal
 
-from typing import Tuple, Sequence, Optional
+from typing import List, Union, Any, Optional, TypeVar
 
-try: 
+T = TypeVar("T", bound=np.generic)
+
+try:
     import cupy as cp
+    import cupy.typing as cpt
     HAS_CUPY = True
-except:
-    HAS_CUPY = False
 
-import numpy as np
+    # NDArray can be either a NumPy or CuPy array of dtype T
+    NDArray = Union[npt.NDArray[T], cpt.NDArray[T]]
+except Exception:
+    # cupy not available
+    HAS_CUPY = False
+    NDArray = npt.NDArray[T]
 
 def get_array_module(arr):
     if type(arr) is np.ndarray:
@@ -26,15 +27,3 @@ def get_array_module(arr):
     else:
         print(type(arr))
         raise RuntimeError('Unknown array type!')
-        
-
-def _normalize_signal(x: np.ndarray) -> np.ndarray:
-    eps = 1e-10
-    xp = get_array_module(x)
-
-    x_abs = xp.abs(x)
-
-    x_norm = x.copy()
-    x_norm /= (x_abs + eps)
-
-    return x_norm

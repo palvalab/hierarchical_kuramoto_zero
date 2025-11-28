@@ -1,6 +1,10 @@
+import numpy as np
+from typing import Optional
+
 from .utils import NDArray, get_array_module, _normalize_signal
 
-def cplv(x: NDArray, y: Optional[NDArray]=None, is_normed: bool=False) -> NDArray:
+
+def cplv(x: NDArray, y: Optional[NDArray]=None, is_normed: bool=False) -> NDArray[np.complexfloating]:
     """
         computes cPLV either for a given pair of complex signals or for all possible pairs of channels if x is 2d matrix
     :param x: 1d or 2d array of complex values

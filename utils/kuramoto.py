@@ -6,32 +6,31 @@ Created on Tue Jun 23 14:05:43 2020
 @author: Vladislav
 """
 import numpy as np
+import numpy.typing as npt
 
-from typing import List, Union, Any
-from nptyping import NDArray as NDTypingNDArray
-from nptyping import Shape, Complex, Float
+from typing import List, Union, Any, Optional, TypeVar
+from .utils import HAS_CUPY, NDArray
 
-try:
+if HAS_CUPY:
     import cupy as cp
-    HAS_CUPY = True
-
-    NDArray = Union[NDTypingNDArray, cp.typing.NDArray]
-except:
-    print(f'Error loading cupy')
-
-    NDArray = NDTypingNDArray
-    HAS_CUPY = False
-
-
 
 import tqdm
 
 class KuramotoFast:
-    def __init__(self, n_oscillators: int, sampling_rate: int, k_list: List[float], 
-                 weight_matrix: NDArray[Shape['N_chans, N_chans'], Float], 
-                 node_frequencies: List[float], noise_scale: float=1.0, 
-                 custom_omegas: NDArray[Shape['N_chans, N_oscillators'], Float]=None, omegas_generator=None, 
-                 use_cuda: bool=True, use_tqdm: bool=True, **kwargs):  
+    def __init__(
+        self,
+        n_oscillators: int,
+        sampling_rate: int,
+        k_list: List[float],
+        weight_matrix: NDArray[np.floating],
+        node_frequencies: List[float],
+        noise_scale: float = 1.0,
+        custom_omegas: Optional[NDArray[np.floating]] = None,
+        omegas_generator=None,
+        use_cuda: bool = True,
+        use_tqdm: bool = True,
+        **kwargs: Any,
+    ):
         """
             Implentation of nested Kuramoto model. The model consists of N nodes each with M oscillators. Each pair of nodes is connected with directed weight given by weight_matrix.
 
@@ -73,10 +72,10 @@ class KuramotoFast:
         if self.omegas_generator is None:
             self.omegas_generator = lambda **gen_kwargs: self.xp.random.normal(**kwargs, **gen_kwargs)
 
-        self._init_parameters(custom_omegas=custom_omegas)
+        self._init_omegas(custom_omegas=custom_omegas)
         self._preallocate()
             
-    def _check_parameters(self, k_list: List[float], weight_matrix: NDArray[Shape['N_chans, N_chans'], Float]):
+    def _check_parameters(self, k_list: List[float], weight_matrix: NDArray[np.floating],):
         n_nodes = len(k_list)
             
         if np.ndim(weight_matrix) != 2 or (weight_matrix.shape[0] != weight_matrix.shape[1]):
@@ -85,7 +84,7 @@ class KuramotoFast:
         if weight_matrix.shape[0] != n_nodes or weight_matrix.shape[1] != n_nodes:
             raise RuntimeError(f'weight matrix should be a 2d matrix of size N_nodes x N_nodes, got {weight_matrix.shape} shape')
     
-    def _init_parameters(self, custom_omegas: NDArray[Shape['N_chans, N_oscillators'], Float]=None):       
+    def _init_omegas(self, custom_omegas: Optional[NDArray[np.floating]] = None):       
         # Central frequencies of each oscillators are evenly spaced values  in [central_frequency - frequency_spread; central_frequncy + frequency_spread]
         # Because we use a complex engine here, we need to convert frequencies given in Hz to a step on complex unit circle. 
         self._complex_dtype = self.xp.complex64
@@ -115,15 +114,16 @@ class KuramotoFast:
         
         self.n_nodes = self.omegas.shape[0]
     
-    def set_omegas(self, omegas: NDArray[Shape['N_chans, N_oscillators'], Float]):
+    def set_omegas(self, omegas: NDArray[np.floating]):
         self.omegas = self.xp.array(omegas, copy=True)
-        self.omegas =  self.xp.exp(1j * (self.omegas * 2 * np.pi / self.sampling_rate)) 
+        self.omegas = self.xp.exp(1j * (self.omegas * 2 * np.pi / self.sampling_rate)) 
     
     def _preallocate(self):
         n_nodes, n_osc = self.phases.shape
         
         self._phase_conj = self.xp.empty_like(self.phases)
         self._external_buffer = self.xp.empty((n_nodes, n_nodes, n_osc), dtype=self.phases.dtype)
+        self._phase_shift_buffer = self.xp.empty_like(self.omegas)
         
     def _internal_step(self):
         # Internal dynamics is how oscillators within a node influence each other. It is computed as pairwise phase difference for oscillators within a node.
@@ -135,15 +135,17 @@ class KuramotoFast:
         self.xp.multiply(self.phases, self._phase_conj.sum(axis=1, keepdims=True), out=self._phase_conj)
         self.xp.conj(self._phase_conj, out=self._phase_conj)
 
+
     def _external_step(self, *args):
         # External dynamics is how other nodes influence oscillators of a node. It is computed as phase difference of each oscillator with mean phase of each other node.
         # We want to compute an oscillator vs node phase difference for each node -> get N_nodes x N_nodes x N_osc tensor
         # Because we want the difference to be weighted we also need to multiply it on N_nodes x N_nodes weight matrix.
 
         # self._external_buffer = self.xp.tensordot(self._phase_conj, self.mean_phase, axes=0).transpose(0,2,1)
+        # self._external_buffer = (self.mean_phase[..., None]*self._phase_conj[None])
+        # self._external_buffer *= self.weight_matrix
 
-        # am I sure that this is the right order and not a bug? 
-        self._external_buffer = (self.mean_phase[..., None]*self._phase_conj[None])
+        self._external_buffer = self.xp.tensordot(self._phase_conj, self.mean_phase, axes=0).transpose(0,2,1)
         self._external_buffer *= self.weight_matrix
 
     def _noise_step(self):
@@ -154,7 +156,7 @@ class KuramotoFast:
         return shift_noise
         
                 
-    def simulate(self, time: float, random_seed=42, aggregate='mean') -> NDArray[Shape['N_chans, Any'], Complex]:
+    def simulate(self, time: float, random_seed: int = 42, aggregate: Union[str, bool] = 'mean') -> NDArray[np.complexfloating]:
         """
             Implentation of nested Kuramoto model. The model consists of N nodes each with M oscillators. Each pair of nodes is connected with directed weight given by weight_matrix.
 
@@ -169,7 +171,7 @@ class KuramotoFast:
         n_iters = int(time*self.sampling_rate)
         
         if aggregate == False:
-            aggregate_func = lambda x, axis: xp.copy(x)
+            aggregate_func = lambda x, axis: x
             self.history = xp.zeros((*self.phases.shape, n_iters+1), dtype=self._complex_dtype)
         else:
             aggregate_func = eval(f'xp.{aggregate}')
@@ -178,7 +180,7 @@ class KuramotoFast:
         self.history[..., 0] = aggregate_func(self.phases, axis=-1)
         
         for step in tqdm.trange(0, n_iters, leave=False, desc='Kuramoto model is running...', disable=self.disable_tqdm):
-            self.mean_phase = self.phases.mean(axis=-1, keepdims=True)
+            self.mean_phase = self.phases.mean(axis=-1)
             xp.conj(self.phases, out=self._phase_conj)
            
             self._external_step(step)
@@ -189,13 +191,13 @@ class KuramotoFast:
             external = xp.exp(1j * xp.imag(self._external_buffer.mean(axis=1)))
             
             # Total phase shift is : natural dynamics (based on oscillator frequency) + internal dynamics + external dynamics
-            phase_shift = self.omegas.copy()
-            phase_shift *= internal 
-            phase_shift *= external
+            self._phase_shift_buffer[:] = self.omegas
+            self._phase_shift_buffer *= internal 
+            self._phase_shift_buffer *= external
             # Add some noise to make model less linear and  prevent possible degradation to simple sin-like
-            phase_shift *= shift_noise
+            self._phase_shift_buffer *= shift_noise
 
-            self.phases *= phase_shift
+            self.phases *= self._phase_shift_buffer
             
             self.history[..., step+1] = aggregate_func(self.phases, axis=-1)
             
@@ -205,7 +207,7 @@ class KuramotoFast:
         return self.history
 
 class KuramotoFastDelayed(KuramotoFast):
-    def __init__(self, delay_matrix, *args, **kwargs):
+    def __init__(self, delay_matrix: NDArray[np.integer], *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.delay_matrix = self.xp.asarray(delay_matrix)
@@ -220,7 +222,7 @@ class KuramotoFastDelayed(KuramotoFast):
 
 
 class KuramotoFastWeighted(KuramotoFast):
-    def __init__(self,  oscillator_weights: NDArray[Shape['N_oscillators, N_oscillators'], Float], **kwargs):
+    def __init__(self,  oscillator_weights: NDArray[np.floating], **kwargs):
         """
             Implentation of nested Kuramoto model. The model consists of N nodes each with M oscillators. Each pair of nodes is connected with directed weight given by weight_matrix.
 
@@ -251,7 +253,7 @@ class KuramotoFastWeighted(KuramotoFast):
 
 
 class KuramotoFastHopf(KuramotoFast):
-    def __init__(self, mu, p, *args, **kwargs):
+    def __init__(self, mu: float, p: float, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.mu = mu
         self.p = p
