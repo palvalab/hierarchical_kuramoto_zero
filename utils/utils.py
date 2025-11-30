@@ -27,3 +27,14 @@ def get_array_module(arr):
     else:
         print(type(arr))
         raise RuntimeError('Unknown array type!')
+        
+def _normalize_signal(x: np.ndarray) -> np.ndarray:
+    eps = 1e-10
+    xp = get_array_module(x)
+
+    x_abs = xp.abs(x)
+
+    x_norm = x.copy()
+    x_norm /= (x_abs + eps)
+
+    return x_norm
