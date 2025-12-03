@@ -154,6 +154,9 @@ class KuramotoFast:
         shift_noise = self.xp.exp(1j*shift_noise)
 
         return shift_noise
+    
+    def _natural_step(self, step):
+        return self.omegas
         
                 
     def simulate(self, time: float, random_seed: int = 42, aggregate: Union[str, bool] = 'mean') -> NDArray[np.complexfloating]:
@@ -173,6 +176,10 @@ class KuramotoFast:
         if aggregate == False:
             aggregate_func = lambda x, axis: x
             self.history = xp.zeros((*self.phases.shape, n_iters+1), dtype=self._complex_dtype)
+        if callable(aggregate):
+            aggregate.reset()
+            aggregate_func = aggregate
+            self.history = xp.zeros((self.phases.shape[0], n_iters+1), dtype=aggregate.dtype)
         else:
             aggregate_func = eval(f'xp.{aggregate}')
             self.history = xp.zeros((self.phases.shape[0], n_iters+1), dtype=self._complex_dtype)
@@ -186,12 +193,13 @@ class KuramotoFast:
             self._external_step(step)
             self._internal_step()
             shift_noise = self._noise_step()
-
+            natural = self._natural_step(step)
+            
             internal = xp.exp(1j * xp.imag(self._phase_conj) * self.shift_coeffs)
             external = xp.exp(1j * xp.imag(self._external_buffer.mean(axis=1)))
             
             # Total phase shift is : natural dynamics (based on oscillator frequency) + internal dynamics + external dynamics
-            self._phase_shift_buffer[:] = self.omegas
+            self._phase_shift_buffer[:] = natural
             self._phase_shift_buffer *= internal 
             self._phase_shift_buffer *= external
             # Add some noise to make model less linear and  prevent possible degradation to simple sin-like
@@ -219,6 +227,16 @@ class KuramotoFastDelayed(KuramotoFast):
 
         self._external_buffer = self._phase_conj[:,None]*delayed_phases[...,None]
         self._external_buffer *= self.weight_matrix
+
+
+class KuramotoFastTypeI(KuramotoFast):
+    def __init__(self, alpha: float, **kwargs):
+        super().__init__(**kwargs)
+
+        self.alpha = alpha
+    
+    def _natural_step(self, step: int):
+        return self.omegas + self.alpha*self.history[step].imag
 
 
 class KuramotoFastWeighted(KuramotoFast):

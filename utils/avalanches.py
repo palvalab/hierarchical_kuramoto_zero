@@ -1,4 +1,5 @@
 import numpy as np
+import numba
 
 def detect_spikes_phase_crossing(data, target_phase=0):
     data_shifted = data*np.exp(1j*target_phase)
@@ -8,13 +9,14 @@ def detect_spikes_phase_crossing(data, target_phase=0):
 
     return spike_events
 
-# @numba.jit
+@numba.jit
 def extract_avalanche_properties_spiking(data_spikes, t=None, use_total=False):
     if (t is None):
-        t = np.median(data_spikes, axis=-1, keepdims=True)
-    
-    avalanche_lengths_channelwise = [list() for i in range(data_spikes.shape[0])]
-    avalanche_sizes_channelwise = [list() for i in range(data_spikes.shape[0])]
+        # t = [np.median(data_spikes[i]) for i in range(data_spikes.shape[0])]
+        t = [np.percentile(data_spikes[i], q=50) for i in range(data_spikes.shape[0])]
+
+    avalanche_lengths_channelwise = list()
+    avalanche_sizes_channelwise = list()
     
     for i in range(data_spikes.shape[0]):
         avalanche_lengths_list = list()
@@ -43,7 +45,7 @@ def extract_avalanche_properties_spiking(data_spikes, t=None, use_total=False):
             avalanche_lengths_list.append(running_length)
             avalanche_sizes_list.append(running_size)
         
-        avalanche_lengths_channelwise[i] = avalanche_lengths_list
-        avalanche_sizes_channelwise[i] = avalanche_sizes_list
+        avalanche_lengths_channelwise.append(avalanche_lengths_list)
+        avalanche_sizes_channelwise.append(avalanche_sizes_list)
 
     return avalanche_lengths_channelwise, avalanche_sizes_channelwise
