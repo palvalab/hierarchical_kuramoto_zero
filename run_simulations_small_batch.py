@@ -18,7 +18,7 @@ from utils.kuramoto import KuramotoFast
 from utils.criticality import kappa_k, dfa
 from utils.avalanches import extract_avalanche_properties_spiking
 
-PROJECT_CODE = os.environ['PROJECT']
+PROJECT_CODE = os.environ['PROJECT_CODE']
 
 def shuffle_connectome(sc):
     res = sc.copy().flatten()
@@ -33,9 +33,6 @@ def shuffle_connectome(sc):
 
 def mean_norm_connectome(sc):
     return sc / sc.mean()
-
-def take_one_hemi(sc):
-    return sc[:100, :100]
 
 def log_scale_connectome(sc):
     return np.log(sc + 1)
@@ -78,12 +75,12 @@ def main(args):
 
     start_size = args.kl_idx * args.grid_size
 
-    subject_indices = sorted([re.search(r'CON(\d+)', fpath).group(1) for fpath in glob.glob(f'/projappl/{PROJECT_CODE}/kuramoto_fitting/SCs/controls/*')])[:10]
+    subject_indices = sorted([re.search(r'CON(\d+)', fpath).group(1) for fpath in glob.glob(f'/projappl/{PROJECT_CODE}/kuramoto_fitting/SCs/controls/*')])
 
     for subject_idx in subject_indices:               
         connectome = load_connectome(subject_idx, [mean_norm_connectome])
         sim = f'{subject_idx}'
-        root_dir = f'/scratch/{PROJECT_CODE}/jneuro_sims_new/{sim}'
+        root_dir = f'/scratch/{PROJECT_CODE}/pnas_sims_new/{sim}'
         
         print(f'Starting a simulation with sim={sim}, start_idx={start_size}')
 
@@ -104,7 +101,14 @@ def main(args):
             k = k_values[k_idx]
             l = l_values[l_idx]
 
-            observables_fname = f'observables_subject_{sim}_K-{k}_L-{l}.npy'
+            if args.aggregate == 'mean':
+                aggregator_func = 'mean'
+            elif args.aggregate == 'avalanches':
+                aggregator_func = SpikeAggregator()
+            else:
+                raise RuntimeError(f'Unknown aggregator: {args.aggregate}')
+
+            observables_fname = f'observables_{args.aggregate}_subject_{sim}_K-{k}_L-{l}.npy'
 
             observables_dir = os.path.join(root_dir, 'observables')
             observables_fpath = os.path.join(observables_dir, observables_fname)
@@ -116,26 +120,29 @@ def main(args):
             
             mdl = KuramotoFast(num_oscillators, sr, [k]*n_nodes, connectome*l, f_nodes, noise_sigma, scale=f_spread, 
                                 use_tqdm=False, custom_omegas=freqs_sampled)
-            data_sim = mdl.simulate(time_s)
+            data_sim = mdl.simulate(time_s, aggregate=aggregator_func)
             data_sim = data_sim[..., cutoff_time*sr:]
+
+
+            if args.aggregate == 'mean':
+                data_envelope = np.abs(data_sim)
     
-            data_envelope = np.abs(data_sim)
-    
-            model_order_vals = data_envelope.mean(axis=-1)
-            model_dfa_vals = dfa(data_envelope, window_sizes, use_gpu=True)[2]
-            model_cc_vals = np.corrcoef(data_envelope)
-            model_plv_vals = np.abs(cplv(data_sim))
+                model_order_vals = data_envelope.mean(axis=-1)
+                model_dfa_vals = dfa(data_envelope, window_sizes, use_gpu=True)[2]
+                model_cc_vals = np.corrcoef(data_envelope)
+                model_plv_vals = np.abs(cplv(data_sim))
 
-            model_psd_f, model_psd_vals = sp.signal.welch(data_sim.real, fs=sr, nperseg=256*4)
+                model_psd_f, model_psd_vals = sp.signal.welch(data_sim.real, fs=sr, nperseg=256*4)
 
-            avalanche_lengths, avalanche_sizes = extract_avalanche_properties_spiking(data_sim.real)
+                model_observables = {'cc_values': model_cc_vals, 'plv_values': model_plv_vals,
+                                     'order': model_order_vals, 'dfa': model_dfa_vals,
+                                     'psd_freqs': model_psd_f, 'psd_values': model_psd_vals}
+            elif args.aggregate == 'avalanches':
+                _, avalanche_sizes = extract_avalanche_properties_spiking(data_sim.real)
 
-            sizes_kappa_vals = np.array([kappa_k(node_avalanche_sizes) for node_avalanche_sizes in avalanche_sizes])
+                sizes_kappa_vals = np.array([kappa_k(node_avalanche_sizes) for node_avalanche_sizes in avalanche_sizes])
 
-            model_observables = {'cc_values': model_cc_vals, 'plv_values': model_plv_vals,
-                                'order': model_order_vals, 'dfa': model_dfa_vals,
-                                'kappa_sizes': sizes_kappa_vals, 
-                                'psd_freqs': model_psd_f, 'psd_values': model_psd_vals}
+                model_observables = {'kappa_sizes': sizes_kappa_vals}
     
             Path(observables_dir).mkdir(parents=True, exist_ok=True)
     
@@ -146,7 +153,8 @@ if __name__ == '__main__':
 
     parser.add_argument('-kl_idx', '--kl_idx', type=int)  
     parser.add_argument('-grid_size', '--grid_size', type=int)
-    parser.add_argument('-data_psd', '--data_psd', type=bool, default=False)  
+    parser.add_argument('-data_psd', '--data_psd', action='store_true')  
+    parser.add_argument('-aggregate', '--aggregate', type=str, default='mean')
      
     args = parser.parse_args()
 
